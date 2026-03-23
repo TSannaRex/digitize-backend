@@ -35,45 +35,43 @@ async def digitize_image(file: UploadFile = File(...)):
         if img is None:
             return JSONResponse(status_code=400, content={"error": "Invalid image"})
             
-        # Shave the borders to avoid tracing the frame
-        margin = 15
+        # Shave the borders by 20 pixels to ensure the file edge isn't traced
+        margin = 20
         if img.shape[0] > margin*2 and img.shape[1] > margin*2:
             img = img[margin:-margin, margin:-margin]
         
         # Convert to Grayscale
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # --- THE AUTO-SENSITIVITY FIX ---
-        # Otsu's Threshold automatically finds the "Star" even if it's blurry
-        # Using THRESH_BINARY_INV assumes a Black star on a White background
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        # --- THE HIGH-SENSITIVITY FIX ---
+        # We use a strict Threshold. This turns anything not-white into a solid shape.
+        # This is the best way to catch sharp star points.
+        _, thresh = cv2.threshold(gray, 220, 255, cv2.THRESH_BINARY_INV)
         
-        # Cleanup: Remove "Digital Dust" that causes square boxes
-        kernel = np.ones((3,3), np.uint8)
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
-        
-        # Find ONLY the most distinct shapes
-        # CHAIN_APPROX_TC89_L1 is much better for geometric shapes like stars
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_TC89_L1)
+        # Find ALL contours without any simplification (CHAIN_APPROX_NONE)
+        # This prevents the 8-stitch "square" behavior.
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         
         pattern = pyembroidery.EmbPattern()
         
         # 3. Generate Stitches
         for contour in contours:
-            # If the area is too small, ignore it
+            # Ignore tiny noise
             if cv2.contourArea(contour) < 100:
                 continue
 
             # Start of the star
             start_pt = contour[0][0]
+            # Use a JUMP to get to the first point so we don't have a drag-line
             pattern.add_stitch_absolute(pyembroidery.JUMP, start_pt[0] * 0.1, start_pt[1] * 0.1)
             
-            # Trace every point found by the AI
+            # Trace EVERY pixel found (this is why the stitch count will be high)
             for point in contour:
                 px, py = point[0]
+                # scale 0.1 converts pixels to mm
                 pattern.add_stitch_absolute(pyembroidery.STITCH, px * 0.1, py * 0.1)
             
-            # Close the shape properly
+            # Return to start to close the loop
             pattern.add_stitch_absolute(pyembroidery.STITCH, start_pt[0] * 0.1, start_pt[1] * 0.1)
             pattern.add_stitch_relative(pyembroidery.TRIM, 0, 0)
 
